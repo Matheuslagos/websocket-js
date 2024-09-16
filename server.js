@@ -5,18 +5,21 @@ const { saveMovie, getMovies } = require('./database');
 
 const wss = new WebSocket.Server({ port: 8080 });
 
+// URL do gateway
+const GATEWAY_URL = 'http://localhost:3000/fetch-movie';
+
 wss.on('connection', (ws) => {
   ws.on('message', async (message) => {
     const searchQuery = message.toString().trim();
     console.log(`Recebida palavra-chave: ${searchQuery}`);
 
-    // Faz requisição para a OMDb API
+    // Faz requisição para o Gateway, que chama a OMDb API
     try {
-      const response = await axios.get(`http://www.omdbapi.com/?apikey=16256300&t=${searchQuery}`);
+      const response = await axios.get(`${GATEWAY_URL}?title=${searchQuery}`);
       const movie = response.data;
 
-      if (movie.Response === 'True') {
-        const movieName = movie.Title;
+      if (movie.title) {
+        const movieName = movie.title;
 
         // Salva o nome do filme no banco de dados
         const savedMovie = await saveMovie(movieName);
