@@ -1,48 +1,62 @@
-// server.js
 const WebSocket = require('ws');
 const axios = require('axios');
-const { saveMovie, getMovies } = require('./database');
+const sqlite3 = require('sqlite3').verbose();
 
 const wss = new WebSocket.Server({ port: 8080 });
+const OMDB_API_KEY = '16256300';
 
-// URL do gateway
-const GATEWAY_URL = 'http://localhost:3000/fetch-movie';
+// Cria e abre o banco de dados SQLite3 persistente
+const db = new sqlite3.Database('./movies.db');
 
-wss.on('connection', (ws) => {
-  ws.on('message', async (message) => {
-    const searchQuery = message.toString().trim();
-    console.log(`Recebida palavra-chave: ${searchQuery}`);
+wss.on('connection', ws => {
+  ws.on('message', async message => {
+    const { action, title } = JSON.parse(message);
 
-    // Faz requisição para o Gateway, que chama a OMDb API
-    try {
-      const response = await axios.get(`${GATEWAY_URL}?title=${searchQuery}`);
-      const movie = response.data;
+    if (action === 'fetch') {
+      try {
+        const response = await axios.get(`http://www.omdbapi.com/?apikey=${OMDB_API_KEY}&t=${title}`);
+        const movie = response.data;
 
-      if (movie.title) {
-        const movieName = movie.title;
+        if (movie.Response === 'True') {
+          db.run('INSERT INTO movies (name) VALUES (?)', [movie.Title], function(err) {
+            if (err) {
+              console.error('Erro ao salvar filme:', err);
+              return;
+            }
 
-        // Salva o nome do filme no banco de dados
-        const savedMovie = await saveMovie(movieName);
-
-        // Notifica todos os clientes conectados
-        wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(`Filme adicionado ao catálogo: ${savedMovie.name}`);
-          }
-        });
-      } else {
-        ws.send('Nenhum filme encontrado.');
+            // Notificar todos os clientes sobre o novo filme
+            wss.clients.forEach(client => {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({ type: 'new_movie', title: movie.Title }));
+              }
+            });
+          });
+        } else {
+          ws.send(JSON.stringify({ type: 'error', message: 'Filme não encontrado' }));
+        }
+      } catch (error) {
+        console.error('Erro ao buscar filme:', error);
+        ws.send(JSON.stringify({ type: 'error', message: 'Erro ao buscar filme' }));
       }
-    } catch (error) {
-      console.error('Erro ao buscar filme:', error);
-      ws.send('Erro ao buscar filme.');
-    }
-  });
+    } else if (action === 'delete') {
+      db.run('DELETE FROM movies WHERE name = ?', [title], function(err) {
+        if (err) {
+          console.error('Erro ao remover filme:', err);
+          return;
+        }
 
-  // Enviar os filmes atuais no banco de dados quando um cliente se conecta
-  ws.on('open', async () => {
-    const movies = await getMovies();
-    ws.send(`Filmes no catálogo: ${movies.map(movie => movie.name).join(', ')}`);
+        if (this.changes === 0) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Filme não encontrado' }));
+        } else {
+          // Notificar todos os clientes sobre a remoção do filme
+          wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: 'remove_movie', title }));
+            }
+          });
+        }
+      });
+    }
   });
 });
 
