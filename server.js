@@ -2,7 +2,7 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 
-const wss = new WebSocket.Server({ port: 8080 });
+const wss = new WebSocket.Server({ port: 3000 });
 const OMDB_API_KEY = '16256300';
 
 // Cria e abre o banco de dados SQLite3 persistente
@@ -60,4 +60,4 @@ wss.on('connection', ws => {
   });
 });
 
-console.log('Servidor WebSocket rodando na porta 8080');
+console.log('Servidor WebSocket rodando na porta 3000');

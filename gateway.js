@@ -3,9 +3,11 @@ const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const sqlite3 = require('sqlite3').verbose();
+const amqp = require('amqplib');
+const WebSocket = require('ws');
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 const OMDB_API_KEY = '16256300';
 
 // Middleware para analisar JSON
@@ -22,17 +24,65 @@ const swaggerOptions = {
     },
     servers: [
       {
-        url: 'http://localhost:3000',
+        url: `http://localhost:${PORT}`,
       },
     ],
   },
-  apis: ['./gateway.js'], // arquivos onde estão as rotas documentadas
+  apis: ['./gateway.js'], // Arquivos onde estão as rotas documentadas
 };
 
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
-// Cria e abre o banco de dados SQLite3 persistente
+// Configuração do WebSocket Server
+const wss = new WebSocket.Server({ port: 3002 });
+
+// Função para enviar mensagens para RabbitMQ
+async function sendToQueue(queue, message) {
+  try {
+    const connection = await amqp.connect('amqp://localhost');
+    const channel = await connection.createChannel();
+    await channel.assertQueue(queue, { durable: true });
+    channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)));
+    console.log(`[x] Enviado para a fila ${queue}:`, message);
+    await channel.close();
+    await connection.close();
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+  }
+}
+
+// Função para enviar mensagens a todos os clientes WebSocket
+function broadcast(message) {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(message));
+    }
+  });
+}
+
+wss.on('connection', (ws) => {
+  console.log('Novo cliente conectado');
+
+  ws.on('message', async (data) => {
+    const message = JSON.parse(data);
+    if (message.action === 'fetch') {
+      console.log(`Recebido pedido para adicionar filme: ${message.title}`);
+      await sendToQueue('add_movie_queue', { action: 'add', title: message.title });
+      broadcast({ type: 'new_movie', title: message.title });
+    } else if (message.action === 'delete') {
+      console.log(`Recebido pedido para remover filme: ${message.title}`);
+      await sendToQueue('remove_movie_queue', { action: 'remove', title: message.title });
+      broadcast({ type: 'remove_movie', title: message.title });
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('Cliente desconectado');
+  });
+});
+
+// Conexão e criação do banco de dados SQLite
 const db = new sqlite3.Database('./movies.db');
 
 db.serialize(() => {
@@ -145,6 +195,7 @@ app.delete('/delete-movie', (req, res) => {
   });
 });
 
+// Inicializa o servidor Express
 app.listen(PORT, () => {
   console.log(`Gateway rodando na porta ${PORT}`);
   console.log(`Acesse a documentação Swagger em http://localhost:${PORT}/api-docs`);
